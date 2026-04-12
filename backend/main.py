@@ -24,7 +24,7 @@ except Exception as e:
     except:
         print("❌ Mediapipe not found. Ensure requirements.txt includes mediapipe.")
 
-# Initialize AI Model
+# Initialize AI Model safely
 try:
     face_mesh = mp_face_mesh.FaceMesh(
         max_num_faces=1, 
@@ -151,4 +151,5 @@ async def websocket_endpoint(websocket: WebSocket):
 if __name__ == "__main__":
     # Railway dynamic PORT handling
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # 🛑 YAHAN FIX HAI: proxy_headers=True is strictly required for Railway WebSockets
+    uvicorn.run(app, host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*")
