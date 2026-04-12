@@ -5,13 +5,13 @@ import logging
 import time
 import uvicorn
 import os
+import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 # 🚀 THE "BULLETPROOF" IMPORT LOGIC
 try:
     import mediapipe as mp
-    # Trying different import paths for solutions
     if hasattr(mp, 'solutions'):
         mp_face_mesh = mp.solutions.face_mesh
     else:
@@ -48,15 +48,17 @@ class AIState:
 state_manager = AIState()
 
 async def get_ai_feedback(websocket: WebSocket):
-    cap = cv2.VideoCapture(0)
-    # Clear internal buffer for zero-lag
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1) 
-    
     try:
         while True:
-            success, frame = cap.read()
-            if not success or frame is None:
-                await asyncio.sleep(0.01)
+            # 1. Receive Image from Frontend
+            data = await websocket.receive_text()
+            
+            # Decode base64 to OpenCV frame
+            encoded_data = data.split(',')[1] if ',' in data else data
+            nparr = np.frombuffer(base64.b64decode(encoded_data), np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+            if frame is None:
                 continue
 
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -76,29 +78,26 @@ async def get_ai_feedback(websocket: WebSocket):
                 top = face.landmark[10]
                 bottom = face.landmark[152]
                 
-                # 1. Yaw Logic (Horizontal Focus)
+                # Yaw & Pitch Logic
                 width = right.x - left.x
                 center_ratio = (nose.x - left.x) / width if width > 0 else 0.5
                 yaw_deviation = abs(0.5 - center_ratio)
-                
-                # 2. Pitch Logic (Mobile Detection)
                 pitch_ratio = bottom.y - top.y
                 
-                # Logic Engine
-                if pitch_ratio < 0.28: # Looking down at phone
+                if pitch_ratio < 0.28: 
                     target_score = 15
                     current_status = "Mobile Usage Detected"
-                elif yaw_deviation < 0.15: # Focused straight
+                elif yaw_deviation < 0.15: 
                     target_score = 98
                     current_status = "Highly Focused"
-                elif yaw_deviation < 0.30: # Distracted
+                elif yaw_deviation < 0.30: 
                     target_score = 65
                     current_status = "Distracted"
-                else: # Looking away
+                else: 
                     target_score = 5
                     current_status = "Focus Lost"
             else:
-                # 🌑 BLACKOUT LOGIC (1.5s Sabar)
+                # BLACKOUT LOGIC
                 if time.time() - state_manager.last_face_time > 1.5:
                     target_score = 0
                     current_status = "User Not Detected"
@@ -107,7 +106,6 @@ async def get_ai_feedback(websocket: WebSocket):
                     current_status = "Searching Face..."
 
             # Apply Exponential Moving Average (EMA) Smoothing
-            # Formula: $F_{t} = \alpha \cdot F_{target} + (1 - \alpha) \cdot F_{t-1}$
             state_manager.current_score = (state_manager.alpha * target_score) + ((1 - state_manager.alpha) * state_manager.current_score)
             
             final_score = int(state_manager.current_score)
@@ -118,19 +116,17 @@ async def get_ai_feedback(websocket: WebSocket):
             _, buffer = cv2.imencode('.jpg', thumb, [cv2.IMWRITE_JPEG_QUALITY, 35])
             b64_img = base64.b64encode(buffer).decode('utf-8')
 
-            try:
-                await websocket.send_json({
-                    "focus_score": final_score, 
-                    "student_state": current_status, 
-                    "frame": b64_img
-                })
-            except:
-                break 
-
-            await asyncio.sleep(0.04) # ~25 FPS delivery
+            # Send data back to Vercel
+            await websocket.send_json({
+                "focus_score": final_score, 
+                "student_state": current_status, 
+                "frame": b64_img
+            })
             
-    finally:
-        cap.release()
+    except WebSocketDisconnect:
+        logger.info("🔌 Client Disconnected.")
+    except Exception as e:
+        logger.error(f"Error: {e}")
 
 @app.websocket("/ws/attention")
 async def websocket_endpoint(websocket: WebSocket):
@@ -142,4 +138,6 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.info("🔌 Socket Disconnected.")
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Railway environment variable se PORT uthata hai
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
