@@ -1,140 +1,80 @@
-import cv2
-import base64
-import time
-import uvicorn
-import os
-import numpy as np
+import cv2, base64, time, uvicorn, os, numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+import mediapipe as mp
 
-# ==========================================
-# 🛑 ULTRA-SAFE MEDIAPIPE IMPORT
-# ==========================================
+# AI Setup
 try:
-    import mediapipe as mp
     mp_face_mesh = mp.solutions.face_mesh
-except Exception as e:
-    print(f"⚠️ Import Warning: {e}")
-
-# Initialize AI Model safely
-try:
-    face_mesh = mp_face_mesh.FaceMesh(
-        max_num_faces=1, 
-        refine_landmarks=True, 
-        min_detection_confidence=0.5, 
-        min_tracking_confidence=0.5
-    )
-except Exception as e:
-    print(f"❌ Model Init Failed: {e}")
+    face_mesh = mp_face_mesh.FaceMesh(refine_landmarks=True)
+except:
     face_mesh = None
 
 app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware, 
-    allow_origins=["*"], 
-    allow_credentials=True,
-    allow_methods=["*"], 
-    allow_headers=["*"]
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 class AIState:
     def __init__(self):
         self.current_score = 100.0
         self.last_face_time = time.time()
-        self.alpha = 0.2 
+        self.alpha = 0.5 # 🚀 Score ab teizi se upar-niche jaye ga
 
 state_manager = AIState()
 
 @app.get("/")
-def health_check():
-    return {"status": "AI Engine is Online on Railway ✅"}
+def health(): return {"status": "AI Engine Online"}
 
 @app.websocket("/ws/attention")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    print("🌐 Vercel Connected to Railway AI Engine!")
-    
+    print("✅ Dashboard Linked!")
     while True:
         try:
-            # 1. Receive Image Frame
             data = await websocket.receive_text()
+            if not data or ',' not in data: continue
             
-            # 2. Decode Base64 Image safely
-            if not data or ',' not in data:
-                continue # 🛑 KHARAB FRAME KO IGNORE KARO, CONNECTION MAT TORO
-                
-            encoded_data = data.split(',')[1]
-            nparr = np.frombuffer(base64.b64decode(encoded_data), np.uint8)
-            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            # Decode
+            raw = base64.b64decode(data.split(',')[1])
+            img = cv2.imdecode(np.frombuffer(raw, np.uint8), 1)
+            if img is None: continue
 
-            if frame is None:
-                continue # 🛑 FRAME KHALI HAI TOH IGNORE KARO
+            # AI Logic
+            res = face_mesh.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+            target_score, status = 0, "User Not Detected"
 
-            if face_mesh is None:
-                continue
-
-            # 3. Process with AI Model
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = face_mesh.process(rgb_frame)
-            
-            target_score = 0
-            current_status = "System Locked"
-
-            if results.multi_face_landmarks:
+            if res.multi_face_landmarks:
                 state_manager.last_face_time = time.time()
-                face = results.multi_face_landmarks[0]
+                f = res.multi_face_landmarks[0].landmark
                 
-                nose = face.landmark[1]
-                left = face.landmark[234]
-                right = face.landmark[454]
-                top = face.landmark[10]
-                bottom = face.landmark[152]
+                # Landmarks (Nose, Left, Right, Top, Bottom)
+                n, l, r, t, b = f[1], f[234], f[454], f[10], f[152]
                 
-                width = right.x - left.x
-                center_ratio = (nose.x - left.x) / width if width > 0 else 0.5
-                yaw_deviation = abs(0.5 - center_ratio)
-                pitch_ratio = bottom.y - top.y
+                # Math Logic (Yaw & Pitch)
+                yaw = abs(0.5 - ((n.x - l.x) / (r.x - l.x) if (r.x - l.x) > 0 else 0.5))
+                pitch = b.y - t.y
                 
-                if pitch_ratio < 0.28: 
-                    target_score = 15
-                    current_status = "Mobile Usage Detected"
-                elif yaw_deviation < 0.15: 
-                    target_score = 98
-                    current_status = "Highly Focused"
-                elif yaw_deviation < 0.30: 
-                    target_score = 65
-                    current_status = "Distracted"
-                else: 
-                    target_score = 5
-                    current_status = "Focus Lost"
-            else:
-                if time.time() - state_manager.last_face_time > 1.5:
-                    target_score = 0
-                    current_status = "User Not Detected"
+                # 🛑 SENSITIVE THRESHOLDS
+                if pitch < 0.31: # Niche dekhne par teizi se girega
+                    target_score, status = 10, "Mobile Usage"
+                elif yaw > 0.12: # Side par dekhne par girega
+                    target_score, status = 35, "Distracted"
                 else:
-                    target_score = 45 
-                    current_status = "Searching Face..."
+                    target_score, status = 100, "Highly Focused"
+            else:
+                if time.time() - state_manager.last_face_time > 1.0:
+                    target_score, status = 0, "System Locked"
 
-            # 4. Smoothing Logic
+            # Smoothing
             state_manager.current_score = (state_manager.alpha * target_score) + ((1 - state_manager.alpha) * state_manager.current_score)
-            final_score = int(state_manager.current_score)
-            if final_score < 3: final_score = 0
-
-            # 5. Send Results Back
-            await websocket.send_json({
-                "focus_score": final_score, 
-                "student_state": current_status, 
-                "frame": data 
-            })
+            final = int(state_manager.current_score)
             
-        except WebSocketDisconnect:
-            print("🔌 Vercel Disconnected (Tab Closed)")
-            break # 🛑 SIRF TAB BAND HONE PAR CONNECTION CLOSE KARO
-        except Exception as e:
-            print(f"⚠️ Chota sa Error (Ignoring): {e}")
-            continue # 🛑 KISI BHI ERROR PAR AGLA FRAME CHECK KARO, CONNECTION MAT TORO
+            # 🚀 Logs mein score check karne ke liye
+            print(f"📊 Live Score: {final}% | {status}")
+
+            await websocket.send_json({"focus_score": final, "student_state": status})
+            
+        except WebSocketDisconnect: break
+        except: continue
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*")
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)), proxy_headers=True, forwarded_allow_ips="*")
