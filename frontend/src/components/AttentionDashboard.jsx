@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import FocusVisualizer from './FocusVisualizer';
 
+// 🛑 APKA PERMANENT RAILWAY LINK
 const RAILWAY_URL = "neurolearn-pro-production.up.railway.app";
 
 const AttentionDashboard = () => {
@@ -22,7 +23,19 @@ const AttentionDashboard = () => {
   useEffect(() => {
     if (showSummary) return;
 
+    // 🌐 Railway Connection (Secure WebSocket)
     socketRef.current = new WebSocket(`wss://${RAILWAY_URL}/ws/attention`);
+
+    // ✅ Connection Successful Logic
+    socketRef.current.onopen = () => {
+      console.log("🚀 Connected to Railway AI!");
+      setStudentState("AI Engine Connected ✅");
+    };
+
+    // ❌ Connection Error Logic
+    socketRef.current.onerror = () => {
+      setStudentState("Connection Failed ❌");
+    };
 
     navigator.mediaDevices.getUserMedia({ video: true }).then((stream) => {
       if (videoRef.current) videoRef.current.srcObject = stream;
@@ -57,7 +70,7 @@ const AttentionDashboard = () => {
         const base64Frame = canvas.toDataURL('image/jpeg', 0.4);
         socketRef.current.send(base64Frame);
       }
-    }, 150);
+    }, 200); // 200ms is better for cloud latency
 
     return () => {
       clearInterval(interval);
@@ -110,7 +123,6 @@ const AttentionDashboard = () => {
 
         .nl-container { max-width: 1200px; margin: 0 auto; padding: 32px 24px; position: relative; z-index: 1; }
 
-        /* Header */
         .nl-header {
           display: flex;
           justify-content: space-between;
@@ -199,7 +211,6 @@ const AttentionDashboard = () => {
         }
         .nl-btn-danger:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(244,63,94,0.4); }
 
-        /* Stats Grid */
         .nl-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
         @media (max-width: 768px) { .nl-stats { grid-template-columns: repeat(2, 1fr); } }
 
@@ -249,7 +260,6 @@ const AttentionDashboard = () => {
         .nl-stat-card.emerald .nl-stat-value { color: #10b981; }
         .nl-stat-card.red .nl-stat-value { color: #f43f5e; }
 
-        /* Visualizer Panel */
         .nl-panel {
           background: rgba(255,255,255,0.02);
           border: 1px solid rgba(255,255,255,0.07);
@@ -258,12 +268,12 @@ const AttentionDashboard = () => {
           margin-bottom: 24px;
         }
 
-        /* Content Panel */
         .nl-content-panel {
           background: rgba(255,255,255,0.02);
           border-radius: 28px;
           padding: 40px;
           transition: all 0.5s ease;
+          filter: ${currentScore < 20 ? 'blur(15px)' : 'none'};
         }
 
         .nl-content-panel.focused {
@@ -309,82 +319,34 @@ const AttentionDashboard = () => {
           50% { opacity: 0.5; }
         }
 
-        /* Monitor PIP */
         .nl-pip {
           position: fixed;
           bottom: 32px; right: 32px;
           width: 220px;
           background: rgba(5,11,24,0.9);
           backdrop-filter: blur(20px);
-          border: 1px solid rgba(34,211,238,0.3);
+          border: 1px solid #22d3ee;
           border-radius: 20px;
           overflow: hidden;
-          box-shadow: 0 8px 32px rgba(0,0,0,0.5), 0 0 24px rgba(34,211,238,0.1);
+          box-shadow: 0 8px 32px rgba(0,0,0,0.5);
           z-index: 100;
         }
-
-        .nl-pip-header {
-          background: rgba(34,211,238,0.08);
-          padding: 8px 14px;
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          border-bottom: 1px solid rgba(34,211,238,0.15);
-        }
-
-        .nl-pip-label {
-          font-size: 9px;
-          font-weight: 700;
-          letter-spacing: 0.2em;
-          text-transform: uppercase;
-          color: #22d3ee;
-          font-family: 'JetBrains Mono', monospace;
-          display: flex;
-          align-items: center;
-          gap: 6px;
-        }
-
-        .nl-rec-dot {
-          width: 6px; height: 6px;
-          border-radius: 50%;
-          background: #f43f5e;
-          animation: pulse-dot 1s ease-in-out infinite;
-        }
-
-        .nl-pip-close {
-          background: none; border: none; cursor: pointer;
-          color: #64748b; font-size: 12px;
-          transition: color 0.2s;
-        }
-        .nl-pip-close:hover { color: #e2e8f0; }
       `}</style>
 
       <div className="nl-root">
-
         <video ref={videoRef} autoPlay playsInline muted style={{ display: 'none' }} />
         <canvas ref={canvasRef} width="320" height="240" style={{ display: 'none' }} />
 
-        {/* Monitor PIP */}
-        {showCamera && (
+        {showCamera && liveFrame && (
           <div className="nl-pip">
-            <div className="nl-pip-header">
-              <span className="nl-pip-label">
-                <span className="nl-rec-dot"></span> Monitor
-              </span>
-              <button className="nl-pip-close" onClick={() => setShowCamera(false)}>✕</button>
-            </div>
-            {liveFrame && (
-              <img
-                src={liveFrame.startsWith('data') ? liveFrame : `data:image/jpeg;base64,${liveFrame}`}
-                style={{ width: '100%', height: 'auto', transform: 'scaleX(-1)', display: 'block' }}
-              />
-            )}
+            <img 
+               src={liveFrame.startsWith('data') ? liveFrame : `data:image/jpeg;base64,${liveFrame}`} 
+               style={{ width: '100%', height: 'auto', transform: 'scaleX(-1)', display: 'block' }} 
+            />
           </div>
         )}
 
         <div className="nl-container">
-
-          {/* Header */}
           <header className="nl-header">
             <div className="nl-brand">
               <div className="nl-brand-icon">🧠</div>
@@ -403,120 +365,59 @@ const AttentionDashboard = () => {
             </div>
           </header>
 
-          {/* Stats */}
           <div className="nl-stats">
-            <div className={`nl-stat-card ${isDistracted ? 'red' : 'blue'}`}>
-              <div className="nl-stat-label">Focus Score</div>
-              <div className="nl-stat-value">{currentScore}%</div>
-            </div>
-            <div className="nl-stat-card amber">
-              <div className="nl-stat-label">Streak</div>
-              <div className="nl-stat-value">{streak}</div>
-            </div>
-            <div className="nl-stat-card blue">
-              <div className="nl-stat-label">Best</div>
-              <div className="nl-stat-value">{maxStreak}</div>
-            </div>
-            <div className="nl-stat-card emerald">
-              <div className="nl-stat-label">XP Earned</div>
-              <div className="nl-stat-value">{xp}</div>
-            </div>
+            <StatBox label="Focus" value={`${currentScore}%`} color={isDistracted ? "red" : "blue"} />
+            <StatBox label="Streak" value={streak} color="amber" />
+            <StatBox label="Best" value={maxStreak} color="blue" />
+            <StatBox label="XP" value={xp} color="emerald" />
           </div>
 
-          {/* Visualizer */}
           <div className="nl-panel">
             <FocusVisualizer focusScore={currentScore} />
           </div>
 
-          {/* Content */}
           <div className={`nl-content-panel ${isDistracted ? 'distracted' : 'focused'}`}>
             <p className="nl-content-text">
               Machine learning represents a paradigm shift in how we process information. By mimicking the neural plasticity of the human brain, these systems can identify complex patterns in real-time. This active learning module is currently being monitored for attention consistency to optimize your cognitive retention...
             </p>
             {isDistracted && (
               <div className="nl-distract-warning">
-                <span>⚠️</span>
-                <span className="nl-distract-warning-text">Attention dropping — please refocus</span>
+                <span className="nl-distract-warning-text">⚠️ Attention dropping — please refocus</span>
               </div>
             )}
           </div>
-
         </div>
       </div>
     </>
   );
 };
 
+const StatBox = ({ label, value, color }) => (
+  <div className={`nl-stat-card ${color}`}>
+    <div className="nl-stat-label">{label}</div>
+    <div className="nl-stat-value">{value}</div>
+  </div>
+);
+
 const SummaryScreen = ({ xp, maxStreak }) => (
-  <>
-    <style>{`
-      @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700;800&family=JetBrains+Mono:wght@600;700&display=swap');
-      .sum-root {
-        min-height: 100vh;
-        background: #050b18;
-        display: flex; align-items: center; justify-content: center;
-        font-family: 'DM Sans', sans-serif;
-        padding: 24px;
-      }
-      .sum-card {
-        background: rgba(255,255,255,0.03);
-        border: 1px solid rgba(34,211,238,0.15);
-        border-radius: 32px;
-        padding: 56px 48px;
-        max-width: 480px;
-        width: 100%;
-        text-align: center;
-        box-shadow: 0 0 80px rgba(34,211,238,0.06);
-      }
-      .sum-trophy { font-size: 72px; margin-bottom: 8px; display: block; }
-      .sum-title { font-size: 36px; font-weight: 800; color: #f8fafc; margin-bottom: 8px; letter-spacing: -1px; }
-      .sum-sub { font-size: 14px; color: #64748b; margin-bottom: 36px; }
-      .sum-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 36px; }
-      .sum-stat {
-        background: rgba(255,255,255,0.03);
-        border: 1px solid rgba(255,255,255,0.07);
-        border-radius: 20px;
-        padding: 24px 16px;
-      }
-      .sum-stat-label { font-size: 10px; font-weight: 700; color: #64748b; letter-spacing: 0.15em; text-transform: uppercase; margin-bottom: 10px; font-family: 'JetBrains Mono', monospace; }
-      .sum-stat-value { font-size: 36px; font-weight: 800; color: #22d3ee; font-family: 'JetBrains Mono', monospace; letter-spacing: -1px; }
-      .sum-btn {
-        width: 100%;
-        background: linear-gradient(135deg, #22d3ee, #3b82f6);
-        color: #050b18;
-        font-weight: 800;
-        font-size: 14px;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        padding: 18px;
-        border-radius: 16px;
-        border: none;
-        cursor: pointer;
-        transition: all 0.2s ease;
-        box-shadow: 0 4px 24px rgba(34,211,238,0.3);
-        font-family: 'DM Sans', sans-serif;
-      }
-      .sum-btn:hover { transform: translateY(-2px); box-shadow: 0 8px 32px rgba(34,211,238,0.4); }
-    `}</style>
-    <div className="sum-root">
-      <div className="sum-card">
-        <span className="sum-trophy">🏆</span>
-        <div className="sum-title">Session Complete</div>
-        <div className="sum-sub">Great work — your brain worked hard today.</div>
-        <div className="sum-grid">
-          <div className="sum-stat">
-            <div className="sum-stat-label">Total XP</div>
-            <div className="sum-stat-value">+{xp}</div>
-          </div>
-          <div className="sum-stat">
-            <div className="sum-stat-label">Best Streak</div>
-            <div className="sum-stat-value">{maxStreak}</div>
-          </div>
+  <div className="sum-root">
+    <div className="sum-card">
+      <span className="sum-trophy">🏆</span>
+      <div className="sum-title">Session Complete</div>
+      <div className="sum-sub">Great work — your brain worked hard today.</div>
+      <div className="sum-grid">
+        <div className="sum-stat">
+          <div className="sum-stat-label">Total XP</div>
+          <div className="sum-stat-value">+{xp}</div>
         </div>
-        <button className="sum-btn" onClick={() => window.location.reload()}>Start New Session</button>
+        <div className="sum-stat">
+          <div className="sum-stat-label">Best Streak</div>
+          <div className="sum-stat-value">{maxStreak}</div>
+        </div>
       </div>
+      <button className="sum-btn" onClick={() => window.location.reload()}>Start New Session</button>
     </div>
-  </>
+  </div>
 );
 
 export default AttentionDashboard;
