@@ -3,78 +3,77 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import mediapipe as mp
 
-# AI Setup
-try:
-    mp_face_mesh = mp.solutions.face_mesh
-    face_mesh = mp_face_mesh.FaceMesh(refine_landmarks=True)
-except:
-    face_mesh = None
-
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-class AIState:
-    def __init__(self):
-        self.current_score = 100.0
-        self.last_face_time = time.time()
-        self.alpha = 0.5 # 🚀 Score ab teizi se upar-niche jaye ga
-
-state_manager = AIState()
+# AI Model - Minimal Setup for Speed
+face_mesh = mp.solutions.face_mesh.FaceMesh(
+    static_image_mode=False,
+    max_num_faces=1,
+    min_detection_confidence=0.5
+)
 
 @app.get("/")
-def health(): return {"status": "AI Engine Online"}
+def health(): return {"status": "AI Engine is Online ✅"}
 
 @app.websocket("/ws/attention")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    print("✅ Dashboard Linked!")
+    print("🚀 CONNECTION ESTABLISHED - RECEIVING FRAMES...")
+    
     while True:
         try:
             data = await websocket.receive_text()
             if not data or ',' not in data: continue
             
-            # Decode
-            raw = base64.b64decode(data.split(',')[1])
-            img = cv2.imdecode(np.frombuffer(raw, np.uint8), 1)
+            # Decode Image
+            encoded = data.split(',')[1]
+            raw = base64.b64decode(encoded)
+            nparr = np.frombuffer(raw, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            
             if img is None: continue
 
-            # AI Logic
-            res = face_mesh.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-            target_score, status = 0, "User Not Detected"
+            # AI Processing
+            rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            results = face_mesh.process(rgb)
+            
+            # Default Values
+            score = 0
+            state = "User Not Detected"
 
-            if res.multi_face_landmarks:
-                state_manager.last_face_time = time.time()
-                f = res.multi_face_landmarks[0].landmark
+            if results.multi_face_landmarks:
+                # Agar face mil gaya, toh logic check karo
+                face = results.multi_face_landmarks[0].landmark
                 
-                # Landmarks (Nose, Left, Right, Top, Bottom)
-                n, l, r, t, b = f[1], f[234], f[454], f[10], f[152]
+                # Simple Detection: Pitch (Sar niche hai ya nahi)
+                # landmark 10 (top) and 152 (bottom)
+                pitch = face[152].y - face[10].y
                 
-                # Math Logic (Yaw & Pitch)
-                yaw = abs(0.5 - ((n.x - l.x) / (r.x - l.x) if (r.x - l.x) > 0 else 0.5))
-                pitch = b.y - t.y
-                
-                # 🛑 SENSITIVE THRESHOLDS
-                if pitch < 0.31: # Niche dekhne par teizi se girega
-                    target_score, status = 10, "Mobile Usage"
-                elif yaw > 0.12: # Side par dekhne par girega
-                    target_score, status = 35, "Distracted"
+                if pitch < 0.30: 
+                    score = 10
+                    state = "Mobile Usage (Looking Down)"
                 else:
-                    target_score, status = 100, "Highly Focused"
+                    score = 100
+                    state = "Focused"
+                
+                # 📢 RAILWAY LOGS MEIN YE NAZAR AAYEGA
+                print(f"✅ FACE SEEN | Score: {score}% | Status: {state}")
             else:
-                if time.time() - state_manager.last_face_time > 1.0:
-                    target_score, status = 0, "System Locked"
+                print("❌ NO FACE IN FRAME")
 
-            # Smoothing
-            state_manager.current_score = (state_manager.alpha * target_score) + ((1 - state_manager.alpha) * state_manager.current_score)
-            final = int(state_manager.current_score)
+            # Send back to Frontend (NO SMOOTHING - INSTANT)
+            await websocket.send_json({
+                "focus_score": score, 
+                "student_state": state
+            })
             
-            # 🚀 Logs mein score check karne ke liye
-            print(f"📊 Live Score: {final}% | {status}")
-
-            await websocket.send_json({"focus_score": final, "student_state": status})
-            
-        except WebSocketDisconnect: break
-        except: continue
+        except WebSocketDisconnect:
+            print("🔌 Connection Closed by User")
+            break
+        except Exception as e:
+            print(f"⚠️ Error: {e}")
+            continue
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)), proxy_headers=True, forwarded_allow_ips="*")
