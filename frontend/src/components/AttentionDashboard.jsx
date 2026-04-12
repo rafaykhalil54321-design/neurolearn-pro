@@ -1,8 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import FocusVisualizer from './FocusVisualizer';
 
-// 🛑 FIX 1: Railway URL ki jagah Localhost lagaya
-const LOCAL_URL = "localhost:8000";
+const RAILWAY_URL = "neurolearn-pro-production.up.railway.app";
 
 const AttentionDashboard = () => {
   const [currentScore, setCurrentScore] = useState(100);
@@ -23,8 +22,7 @@ const AttentionDashboard = () => {
   useEffect(() => {
     if (showSummary) return;
 
-    // 🛑 FIX 2: 'wss://' ko 'ws://' kiya local testing ke liye
-    socketRef.current = new WebSocket(`ws://${LOCAL_URL}/ws/attention`);
+    socketRef.current = new WebSocket(`wss://${RAILWAY_URL}/ws/attention`);
 
     navigator.mediaDevices.getUserMedia({ video: true }).then((stream) => {
       if (videoRef.current) videoRef.current.srcObject = stream;
@@ -69,9 +67,6 @@ const AttentionDashboard = () => {
 
   if (showSummary) return <SummaryScreen xp={xp} maxStreak={maxStreak} />;
 
-  const scoreColor = currentScore >= 80 ? '#22d3ee' : currentScore >= 50 ? '#f59e0b' : '#f43f5e';
-  const scoreGlow = currentScore >= 80 ? '0 0 32px rgba(34,211,238,0.35)' : currentScore >= 50 ? '0 0 32px rgba(245,158,11,0.35)' : '0 0 32px rgba(244,63,94,0.35)';
-
   return (
     <>
       <style>{`
@@ -114,25 +109,6 @@ const AttentionDashboard = () => {
         }
 
         .nl-container { max-width: 1200px; margin: 0 auto; padding: 32px 24px; position: relative; z-index: 1; }
-
-        /* Blackout */
-        .nl-blackout {
-          position: fixed; inset: 0; z-index: 1000;
-          background: #000;
-          display: flex; flex-direction: column; align-items: center; justify-content: center;
-          transition: opacity 0.8s ease;
-        }
-        .nl-blackout.hidden { opacity: 0; pointer-events: none; }
-
-        .nl-spin {
-          width: 56px; height: 56px;
-          border: 3px solid rgba(34,211,238,0.2);
-          border-top-color: #22d3ee;
-          border-radius: 50%;
-          animation: spin 0.8s linear infinite;
-          margin-bottom: 24px;
-        }
-        @keyframes spin { to { transform: rotate(360deg); } }
 
         /* Header */
         .nl-header {
@@ -287,9 +263,7 @@ const AttentionDashboard = () => {
           background: rgba(255,255,255,0.02);
           border-radius: 28px;
           padding: 40px;
-          transition: all 0.7s ease;
-          position: relative;
-          overflow: hidden;
+          transition: all 0.5s ease;
         }
 
         .nl-content-panel.focused {
@@ -307,44 +281,32 @@ const AttentionDashboard = () => {
           line-height: 1.85;
           color: #cbd5e1;
           font-weight: 400;
-          transition: opacity 0.5s ease, filter 0.5s ease;
         }
 
-        .nl-content-panel.blurred .nl-content-text {
-          opacity: 0;
-          filter: blur(16px);
-        }
-
-        .nl-attention-alert {
-          position: absolute;
-          inset: 0;
+        .nl-distract-warning {
+          margin-top: 24px;
           display: flex;
-          flex-direction: column;
           align-items: center;
-          justify-content: center;
-          background: rgba(5,11,24,0.7);
-          backdrop-filter: blur(4px);
-          border-radius: 28px;
-          opacity: 0;
-          pointer-events: none;
-          transition: opacity 0.5s ease;
+          gap: 10px;
+          padding: 14px 20px;
+          background: rgba(244,63,94,0.06);
+          border: 1px solid rgba(244,63,94,0.2);
+          border-radius: 14px;
         }
 
-        .nl-content-panel.distracted .nl-attention-alert {
-          opacity: 1;
-          pointer-events: auto;
-        }
-
-        .nl-alert-icon { font-size: 48px; margin-bottom: 16px; animation: float 2s ease-in-out infinite; }
-        @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
-
-        .nl-alert-text {
-          font-size: 14px;
+        .nl-distract-warning-text {
+          font-size: 12px;
           font-weight: 700;
-          letter-spacing: 0.15em;
+          letter-spacing: 0.12em;
           text-transform: uppercase;
           color: #f43f5e;
           font-family: 'JetBrains Mono', monospace;
+          animation: warn-pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes warn-pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
         }
 
         /* Monitor PIP */
@@ -397,14 +359,7 @@ const AttentionDashboard = () => {
         .nl-pip-close:hover { color: #e2e8f0; }
       `}</style>
 
-      <div className={`nl-root${isZenMode ? ' zen' : ''}`}>
-
-        {/* Blackout Overlay */}
-        <div className={`nl-blackout${currentScore === 0 ? '' : ' hidden'}`}>
-          <div className="nl-spin"></div>
-          <h2 style={{ color: '#f8fafc', fontSize: '22px', fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>System Locked</h2>
-          <p style={{ color: '#475569', fontSize: '12px', fontWeight: 600, letterSpacing: '0.15em', textTransform: 'uppercase', fontFamily: "'JetBrains Mono', monospace" }}>Look at camera to resume</p>
-        </div>
+      <div className="nl-root">
 
         <video ref={videoRef} autoPlay playsInline muted style={{ display: 'none' }} />
         <canvas ref={canvasRef} width="320" height="240" style={{ display: 'none' }} />
@@ -474,14 +429,16 @@ const AttentionDashboard = () => {
           </div>
 
           {/* Content */}
-          <div className={`nl-content-panel ${isDistracted ? 'distracted' : 'focused'} ${currentScore < 20 ? 'blurred' : ''}`}>
+          <div className={`nl-content-panel ${isDistracted ? 'distracted' : 'focused'}`}>
             <p className="nl-content-text">
               Machine learning represents a paradigm shift in how we process information. By mimicking the neural plasticity of the human brain, these systems can identify complex patterns in real-time. This active learning module is currently being monitored for attention consistency to optimize your cognitive retention...
             </p>
-            <div className="nl-attention-alert">
-              <div className="nl-alert-icon">👁️</div>
-              <div className="nl-alert-text">Attention required to unlock content</div>
-            </div>
+            {isDistracted && (
+              <div className="nl-distract-warning">
+                <span>⚠️</span>
+                <span className="nl-distract-warning-text">Attention dropping — please refocus</span>
+              </div>
+            )}
           </div>
 
         </div>
