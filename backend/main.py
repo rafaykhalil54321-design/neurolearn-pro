@@ -4,8 +4,7 @@ import time
 import uvicorn
 import os
 import numpy as np
-import sys
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 # ==========================================
@@ -13,16 +12,9 @@ from fastapi.middleware.cors import CORSMiddleware
 # ==========================================
 try:
     import mediapipe as mp
-    if hasattr(mp, 'solutions'):
-        mp_face_mesh = mp.solutions.face_mesh
-    else:
-        import mediapipe.python.solutions.face_mesh as mp_face_mesh
+    mp_face_mesh = mp.solutions.face_mesh
 except Exception as e:
     print(f"⚠️ Import Warning: {e}")
-    try:
-        import mediapipe.solutions.face_mesh as mp_face_mesh
-    except:
-        print("❌ Mediapipe not found. Ensure requirements.txt includes mediapipe.")
 
 # Initialize AI Model safely
 try:
@@ -38,7 +30,6 @@ except Exception as e:
 
 app = FastAPI()
 
-# 🌐 CORS Setup for Online Deployment (Vercel Compatibility)
 app.add_middleware(
     CORSMiddleware, 
     allow_origins=["*"], 
@@ -47,7 +38,6 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-# AI State Management (EMA Smoothing)
 class AIState:
     def __init__(self):
         self.current_score = 100.0
@@ -63,32 +53,28 @@ def health_check():
 @app.websocket("/ws/attention")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    print("🌐 WebSocket Connected to Railway AI Engine!")
-    try:
-        while True:
+    print("🌐 Vercel Connected to Railway AI Engine!")
+    
+    while True:
+        try:
             # 1. Receive Image Frame
             data = await websocket.receive_text()
             
-            # 2. Decode Base64 Image
-            try:
-                encoded_data = data.split(',')[1] if ',' in data else data
-                nparr = np.frombuffer(base64.b64decode(encoded_data), np.uint8)
-                frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            except Exception:
-                continue
+            # 2. Decode Base64 Image safely
+            if not data or ',' not in data:
+                continue # 🛑 KHARAB FRAME KO IGNORE KARO, CONNECTION MAT TORO
+                
+            encoded_data = data.split(',')[1]
+            nparr = np.frombuffer(base64.b64decode(encoded_data), np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
             if frame is None:
+                continue # 🛑 FRAME KHALI HAI TOH IGNORE KARO
+
+            if face_mesh is None:
                 continue
 
             # 3. Process with AI Model
-            if face_mesh is None:
-                await websocket.send_json({
-                    "focus_score": 0, 
-                    "student_state": "AI Model Error", 
-                    "frame": data
-                })
-                continue
-
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = face_mesh.process(rgb_frame)
             
@@ -99,14 +85,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 state_manager.last_face_time = time.time()
                 face = results.multi_face_landmarks[0]
                 
-                # Extract Landmarks
                 nose = face.landmark[1]
                 left = face.landmark[234]
                 right = face.landmark[454]
                 top = face.landmark[10]
                 bottom = face.landmark[152]
                 
-                # Focus Detection Logic
                 width = right.x - left.x
                 center_ratio = (nose.x - left.x) / width if width > 0 else 0.5
                 yaw_deviation = abs(0.5 - center_ratio)
@@ -125,7 +109,6 @@ async def websocket_endpoint(websocket: WebSocket):
                     target_score = 5
                     current_status = "Focus Lost"
             else:
-                # 1.5s Blackout Grace Period
                 if time.time() - state_manager.last_face_time > 1.5:
                     target_score = 0
                     current_status = "User Not Detected"
@@ -145,11 +128,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 "frame": data 
             })
             
-    except Exception as e:
-        print(f"🔌 Connection closed or Error: {e}")
+        except WebSocketDisconnect:
+            print("🔌 Vercel Disconnected (Tab Closed)")
+            break # 🛑 SIRF TAB BAND HONE PAR CONNECTION CLOSE KARO
+        except Exception as e:
+            print(f"⚠️ Chota sa Error (Ignoring): {e}")
+            continue # 🛑 KISI BHI ERROR PAR AGLA FRAME CHECK KARO, CONNECTION MAT TORO
 
 if __name__ == "__main__":
-    # Railway dynamic PORT handling
     port = int(os.environ.get("PORT", 8000))
-    # 🛑 YAHAN FIX HAI: proxy_headers=True is strictly required for Railway WebSockets
     uvicorn.run(app, host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*")
