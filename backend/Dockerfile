@@ -1,7 +1,7 @@
-# Stable Python base image
-FROM python:3.10-slim
+# SLIM hata diya, ab full Python 3.10 use hoga (no missing files)
+FROM python:3.10
 
-# Install system dependencies with the correct package names
+# Install graphics libraries
 RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
