@@ -1,6 +1,11 @@
 import React, { useEffect, useState, useRef } from 'react';
 import FocusVisualizer from './FocusVisualizer';
 
+// ==========================================================
+// 🛑 SIRF IS LINE MEIN APNA RAILWAY KA URL CHECK KAREIN
+const RAILWAY_URL = "neurolearn-pro-production.up.railway.app"; 
+// ==========================================================
+
 const AttentionDashboard = () => {
   const [currentScore, setCurrentScore] = useState(100);
   const [isDistracted, setIsDistracted] = useState(false);
@@ -14,47 +19,74 @@ const AttentionDashboard = () => {
   const [liveFrame, setLiveFrame] = useState(null);
 
   const socketRef = useRef(null);
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
 
   useEffect(() => {
     if (showSummary) return;
 
-    socketRef.current = new WebSocket('wss://your-railway-app-url.up.railway.app/ws/attention');
+    // WebSocket Connection using the URL from top
+    socketRef.current = new WebSocket(`wss://${RAILWAY_URL}/ws/attention`);
 
+    // 1. Camera access setup
+    navigator.mediaDevices.getUserMedia({ video: true }).then((stream) => {
+      if (videoRef.current) videoRef.current.srcObject = stream;
+    }).catch(err => setStudentState("Camera Error ❌"));
+
+    // 2. Receive processed data from Railway
     socketRef.current.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        const score = data.focus_score;
-        
-        setCurrentScore(score);
+        setCurrentScore(data.focus_score);
         setStudentState(data.student_state);
-        setIsDistracted(score < 70);
+        setIsDistracted(data.focus_score < 70);
         if (data.frame) setLiveFrame(data.frame);
 
-        if (score >= 80) {
+        // Gamification Logic (XP & Streaks)
+        if (data.focus_score >= 80) {
           setStreak(prev => {
             const next = prev + 1;
             if (next > maxStreak) setMaxStreak(next);
-            if (next > 0 && next % 30 === 0) setXp(x => x + 50);
+            if (next > 0 && next % 50 === 0) setXp(x => x + 100);
             return next;
           });
-        } else if (score < 60) setStreak(0);
-      } catch (e) { console.error("Socket Error:", e); }
+        } else if (data.focus_score < 50) {
+          setStreak(0);
+        }
+      } catch (e) { console.error("Data Parse Error:", e); }
     };
 
-    return () => { if (socketRef.current) socketRef.current.close(); };
-  }, [showSummary]); 
+    // 3. Send Camera frames to Railway (Every 150ms)
+    const interval = setInterval(() => {
+      if (socketRef.current?.readyState === WebSocket.OPEN && videoRef.current) {
+        const canvas = canvasRef.current;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+        const base64Frame = canvas.toDataURL('image/jpeg', 0.4); 
+        socketRef.current.send(base64Frame);
+      }
+    }, 150);
+
+    return () => { 
+      clearInterval(interval);
+      if (socketRef.current) socketRef.current.close(); 
+    };
+  }, [showSummary, maxStreak]); 
 
   if (showSummary) return <SummaryScreen xp={xp} maxStreak={maxStreak} />;
 
   return (
     <div className={`transition-all duration-700 min-h-screen font-['Inter'] ${isZenMode ? 'bg-slate-900' : 'bg-slate-50 dark:bg-slate-950'}`}>
       
-      {/* 🌑 HARD BLACKOUT OVERLAY (No-Framer Version) */}
+      {/* 🌑 Blackout Overlay when system is locked */}
       <div className={`fixed inset-0 z-[1000] bg-black flex flex-col items-center justify-center transition-opacity duration-1000 ${currentScore === 0 ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
            <div className="w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-6"></div>
            <h2 className="text-white text-2xl font-black tracking-widest uppercase">System Locked</h2>
-           <p className="text-slate-500 text-sm mt-3 font-bold uppercase tracking-widest">Look at Camera to Resume</p>
+           <p className="text-slate-500 text-sm mt-3 font-bold uppercase tracking-widest">Look at Camera to Resume Session</p>
       </div>
+
+      <video ref={videoRef} autoPlay playsInline muted className="hidden" />
+      <canvas ref={canvasRef} width="320" height="240" className="hidden" />
 
       {/* Monitor PIP */}
       {showCamera && (
@@ -65,7 +97,7 @@ const AttentionDashboard = () => {
             </span>
             <button onClick={() => setShowCamera(false)}>✕</button>
           </div>
-          {liveFrame && <img src={`data:image/jpeg;base64,${liveFrame}`} className="w-full h-auto transform scale-x-[-1]" />}
+          {liveFrame && <img src={liveFrame.startsWith('data') ? liveFrame : `data:image/jpeg;base64,${liveFrame}`} className="w-full h-auto transform scale-x-[-1]" />}
         </div>
       )}
 
@@ -98,7 +130,7 @@ const AttentionDashboard = () => {
             Machine learning represents a paradigm shift in how we process information. By mimicking the neural plasticity of the human brain, these systems can identify complex patterns in real-time. This active learning module is currently being monitored for attention consistency to optimize your cognitive retention...
           </p>
           {isDistracted && currentScore > 0 && (
-            <div className="mt-10 text-center text-red-500 font-black animate-pulse tracking-widest uppercase text-sm">⚠️ Attention Required to Unlock</div>
+            <div className="mt-10 text-center text-red-500 font-black animate-pulse tracking-widest uppercase text-sm">⚠️ Attention Required to Unlock Content</div>
           )}
         </div>
       </div>
@@ -106,12 +138,20 @@ const AttentionDashboard = () => {
   );
 };
 
-const StatBox = ({ label, value, color }) => (
-  <div className={`p-6 rounded-[2rem] border-2 transition-all ${color === 'red' ? 'bg-red-50 border-red-100 text-red-600' : color === 'blue' ? 'bg-blue-50 border-blue-100 text-blue-600' : color === 'emerald' ? 'bg-emerald-50 border-emerald-100 text-emerald-600' : 'bg-orange-50 border-orange-100 text-orange-600'}`}>
-    <p className="text-[10px] font-black uppercase opacity-60 tracking-widest mb-1">{label}</p>
-    <p className="text-3xl font-black">{value}</p>
-  </div>
-);
+const StatBox = ({ label, value, color }) => {
+  const themes = {
+    red: "bg-red-50 border-red-100 text-red-600",
+    blue: "bg-blue-50 border-blue-100 text-blue-600",
+    emerald: "bg-emerald-50 border-emerald-100 text-emerald-600",
+    amber: "bg-orange-50 border-orange-100 text-orange-600"
+  };
+  return (
+    <div className={`p-6 rounded-[2rem] border-2 transition-all ${themes[color] || themes.blue}`}>
+      <p className="text-[10px] font-black uppercase opacity-60 tracking-widest mb-1">{label}</p>
+      <p className="text-3xl font-black">{value}</p>
+    </div>
+  );
+};
 
 const SummaryScreen = ({ xp, maxStreak }) => (
   <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6 font-['Inter']">
