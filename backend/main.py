@@ -9,7 +9,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
 # ==========================================
-# 🛑 MEDIAPIPE IMPORT (Python 3.14+ Fix)
+# 🛑 ULTRA-SAFE MEDIAPIPE IMPORT
 # ==========================================
 try:
     import mediapipe as mp
@@ -22,11 +22,9 @@ except Exception as e:
     try:
         import mediapipe.solutions.face_mesh as mp_face_mesh
     except:
-        print("❌ CRITICAL: Mediapipe is failing due to Python 3.14 architecture.")
-        print("💡 FIX FOR COMPEC: Please downgrade to Python 3.11 for stable AI models.")
-        sys.exit(1)
+        print("❌ Mediapipe not found. Ensure requirements.txt includes mediapipe.")
 
-# Initialize AI Model safely
+# Initialize AI Model
 try:
     face_mesh = mp_face_mesh.FaceMesh(
         max_num_faces=1, 
@@ -40,15 +38,16 @@ except Exception as e:
 
 app = FastAPI()
 
-# CORS Middleware Setup
+# 🌐 CORS Setup for Online Deployment (Vercel Compatibility)
 app.add_middleware(
     CORSMiddleware, 
     allow_origins=["*"], 
+    allow_credentials=True,
     allow_methods=["*"], 
     allow_headers=["*"]
 )
 
-# AI State Management
+# AI State Management (EMA Smoothing)
 class AIState:
     def __init__(self):
         self.current_score = 100.0
@@ -59,17 +58,18 @@ state_manager = AIState()
 
 @app.get("/")
 def health_check():
-    return {"status": "alive"}
+    return {"status": "AI Engine is Online on Railway ✅"}
 
 @app.websocket("/ws/attention")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    print("🌐 WebSocket Connected to Dashboard!")
+    print("🌐 WebSocket Connected to Railway AI Engine!")
     try:
         while True:
+            # 1. Receive Image Frame
             data = await websocket.receive_text()
             
-            # Decode Image
+            # 2. Decode Base64 Image
             try:
                 encoded_data = data.split(',')[1] if ',' in data else data
                 nparr = np.frombuffer(base64.b64decode(encoded_data), np.uint8)
@@ -80,11 +80,11 @@ async def websocket_endpoint(websocket: WebSocket):
             if frame is None:
                 continue
 
-            # Check if model loaded properly
+            # 3. Process with AI Model
             if face_mesh is None:
                 await websocket.send_json({
                     "focus_score": 0, 
-                    "student_state": "Python 3.14 Model Error ❌", 
+                    "student_state": "AI Model Error", 
                     "frame": data
                 })
                 continue
@@ -106,7 +106,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 top = face.landmark[10]
                 bottom = face.landmark[152]
                 
-                # Math Logic for Head Pose
+                # Focus Detection Logic
                 width = right.x - left.x
                 center_ratio = (nose.x - left.x) / width if width > 0 else 0.5
                 yaw_deviation = abs(0.5 - center_ratio)
@@ -125,6 +125,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     target_score = 5
                     current_status = "Focus Lost"
             else:
+                # 1.5s Blackout Grace Period
                 if time.time() - state_manager.last_face_time > 1.5:
                     target_score = 0
                     current_status = "User Not Detected"
@@ -132,12 +133,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     target_score = 45 
                     current_status = "Searching Face..."
 
-            # Apply EMA Smoothing
+            # 4. Smoothing Logic
             state_manager.current_score = (state_manager.alpha * target_score) + ((1 - state_manager.alpha) * state_manager.current_score)
             final_score = int(state_manager.current_score)
             if final_score < 3: final_score = 0
 
-            # Send back to Frontend
+            # 5. Send Results Back
             await websocket.send_json({
                 "focus_score": final_score, 
                 "student_state": current_status, 
@@ -145,8 +146,9 @@ async def websocket_endpoint(websocket: WebSocket):
             })
             
     except Exception as e:
-        print(f"Socket Error: {e}")
+        print(f"🔌 Connection closed or Error: {e}")
 
 if __name__ == "__main__":
+    # Railway dynamic PORT handling
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
