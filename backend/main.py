@@ -1,4 +1,4 @@
-import cv2
+vaimport cv2
 import base64
 import time
 import uvicorn
@@ -7,25 +7,12 @@ import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-# ==========================================
-# 🛑 ULTRA-SAFE MEDIAPIPE IMPORT
-# ==========================================
 try:
     import mediapipe as mp
     mp_face_mesh = mp.solutions.face_mesh
+    face_mesh = mp_face_mesh.FaceMesh(refine_landmarks=True)
 except Exception as e:
-    print(f"⚠️ Import Warning: {e}")
-
-# Initialize AI Model safely
-try:
-    face_mesh = mp_face_mesh.FaceMesh(
-        max_num_faces=1, 
-        refine_landmarks=True, 
-        min_detection_confidence=0.5, 
-        min_tracking_confidence=0.5
-    )
-except Exception as e:
-    print(f"❌ Model Init Failed: {e}")
+    print(f"Model Init Error: {e}")
     face_mesh = None
 
 app = FastAPI()
@@ -42,36 +29,42 @@ class AIState:
     def __init__(self):
         self.current_score = 100.0
         self.last_face_time = time.time()
-        self.alpha = 0.2 
+        self.alpha = 0.5 # Fast response
 
 state_manager = AIState()
 
 @app.get("/")
 def health_check():
-    return {"status": "AI Engine is Online on Railway ✅"}
+    return {"status": "AI Engine is Online ✅"}
 
 @app.websocket("/ws/attention")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    print("🌐 Vercel Connected to Railway AI Engine!")
     
     while True:
         try:
-            # 1. Receive Image Frame
             data = await websocket.receive_text()
             
-            # 2. Decode Base64 Image safely
+            # 🛑 1. Check if Data is missing
             if not data or ',' not in data:
+                await websocket.send_json({"focus_score": 0, "student_state": "No Camera Data"})
+                continue
+
+            # 🛑 2. Check if AI Model Failed to load on Server
+            if face_mesh is None:
+                await websocket.send_json({"focus_score": 0, "student_state": "AI Model Dead on Server"})
                 continue
                 
             encoded_data = data.split(',')[1]
             nparr = np.frombuffer(base64.b64decode(encoded_data), np.uint8)
             frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-            if frame is None or face_mesh is None:
+            # 🛑 3. Check if OpenCV failed to read image
+            if frame is None:
+                await websocket.send_json({"focus_score": 0, "student_state": "Bad Image Frame"})
                 continue
 
-            # 3. Process with AI Model
+            # 🧠 4. Process AI
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = face_mesh.process(rgb_frame)
             
@@ -113,24 +106,22 @@ async def websocket_endpoint(websocket: WebSocket):
                     target_score = 45 
                     current_status = "Searching Face..."
 
-            # 4. Smoothing Logic
+            # Smoothing
             state_manager.current_score = (state_manager.alpha * target_score) + ((1 - state_manager.alpha) * state_manager.current_score)
             final_score = int(state_manager.current_score)
-            if final_score < 3: final_score = 0
 
-            # 5. Send Results Back
+            # Send Success Score
             await websocket.send_json({
                 "focus_score": final_score, 
-                "student_state": current_status, 
-                "frame": data 
+                "student_state": current_status
             })
             
         except WebSocketDisconnect:
-            print("🔌 Connection Closed by User Tab")
             break
         except Exception as e:
-            continue
+            # 🛑 5. Send ANY other error directly to screen!
+            await websocket.send_json({"focus_score": 0, "student_state": f"Err: {str(e)[:25]}"})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*")
+    uvicorn.run(app, host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*")v
