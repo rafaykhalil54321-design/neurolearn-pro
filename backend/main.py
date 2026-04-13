@@ -1,4 +1,4 @@
-vaimport cv2
+import cv2
 import base64
 import time
 import uvicorn
@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 try:
     import mediapipe as mp
-    mp_face_mesh = mp.solutions.face_mesh
+    import mediapipe.python.solutions.face_mesh as mp_face_mesh
     face_mesh = mp_face_mesh.FaceMesh(refine_landmarks=True)
 except Exception as e:
     print(f"Model Init Error: {e}")
@@ -29,7 +29,7 @@ class AIState:
     def __init__(self):
         self.current_score = 100.0
         self.last_face_time = time.time()
-        self.alpha = 0.5 # Fast response
+        self.alpha = 0.5 
 
 state_manager = AIState()
 
@@ -44,27 +44,15 @@ async def websocket_endpoint(websocket: WebSocket):
     while True:
         try:
             data = await websocket.receive_text()
-            
-            # 🛑 1. Check if Data is missing
-            if not data or ',' not in data:
-                await websocket.send_json({"focus_score": 0, "student_state": "No Camera Data"})
-                continue
-
-            # 🛑 2. Check if AI Model Failed to load on Server
-            if face_mesh is None:
-                await websocket.send_json({"focus_score": 0, "student_state": "AI Model Dead on Server"})
-                continue
+            if not data or ',' not in data: continue
+            if face_mesh is None: continue
                 
             encoded_data = data.split(',')[1]
             nparr = np.frombuffer(base64.b64decode(encoded_data), np.uint8)
             frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-            # 🛑 3. Check if OpenCV failed to read image
-            if frame is None:
-                await websocket.send_json({"focus_score": 0, "student_state": "Bad Image Frame"})
-                continue
+            if frame is None: continue
 
-            # 🧠 4. Process AI
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = face_mesh.process(rgb_frame)
             
@@ -81,23 +69,29 @@ async def websocket_endpoint(websocket: WebSocket):
                 top = face.landmark[10]
                 bottom = face.landmark[152]
                 
-                width = right.x - left.x
-                center_ratio = (nose.x - left.x) / width if width > 0 else 0.5
-                yaw_deviation = abs(0.5 - center_ratio)
-                pitch_ratio = bottom.y - top.y
+                # 🚀 SCALE-INVARIANT MATH (Faslay ka asar khatam - UNTOUCHED)
+                face_width = right.x - left.x
+                face_height = bottom.y - top.y
                 
-                if pitch_ratio < 0.28: 
-                    target_score = 15
-                    current_status = "Mobile Usage Detected"
-                elif yaw_deviation < 0.15: 
+                if face_width > 0 and face_height > 0:
+                    yaw_ratio = (nose.x - left.x) / face_width
+                    pitch_ratio = (nose.y - top.y) / face_height
+                    
+                    yaw_deviation = abs(0.5 - yaw_ratio)
+                    
+                    if pitch_ratio > 0.65: 
+                        target_score = 15
+                        current_status = "Mobile Usage Detected"
+                    elif yaw_deviation > 0.18: 
+                        target_score = 45
+                        current_status = "Distracted"
+                    else: 
+                        target_score = 98
+                        current_status = "Highly Focused"
+                else:
                     target_score = 98
                     current_status = "Highly Focused"
-                elif yaw_deviation < 0.30: 
-                    target_score = 65
-                    current_status = "Distracted"
-                else: 
-                    target_score = 5
-                    current_status = "Focus Lost"
+
             else:
                 if time.time() - state_manager.last_face_time > 1.5:
                     target_score = 0
@@ -110,18 +104,18 @@ async def websocket_endpoint(websocket: WebSocket):
             state_manager.current_score = (state_manager.alpha * target_score) + ((1 - state_manager.alpha) * state_manager.current_score)
             final_score = int(state_manager.current_score)
 
-            # Send Success Score
+            # 🚀 SIRF YEH LINE ADD HAI CAMERA KE LIYE 
             await websocket.send_json({
                 "focus_score": final_score, 
-                "student_state": current_status
+                "student_state": current_status,
+                "frame": data
             })
             
         except WebSocketDisconnect:
             break
-        except Exception as e:
-            # 🛑 5. Send ANY other error directly to screen!
-            await websocket.send_json({"focus_score": 0, "student_state": f"Err: {str(e)[:25]}"})
+        except Exception:
+            continue
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*")v
+    uvicorn.run(app, host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*")

@@ -1,8 +1,8 @@
 import React, { useEffect, useState, useRef } from 'react';
 import FocusVisualizer from './FocusVisualizer';
 
-// 🛑 APKA PERMANENT RAILWAY LINK
-const RAILWAY_URL = "neurolearn-pro-production.up.railway.app";
+// 🛑 LOCAL TESTING URL (Railway par push karne se pehle isay wss://neurolearn-pro-production.up.railway.app/ws/attention kar dena)
+const SOCKET_URL = "ws://localhost:8000/ws/attention";
 
 const AttentionDashboard = () => {
   const [currentScore, setCurrentScore] = useState(100);
@@ -23,24 +23,26 @@ const AttentionDashboard = () => {
   useEffect(() => {
     if (showSummary) return;
 
-    // 🌐 Railway Connection (Secure WebSocket)
-    socketRef.current = new WebSocket(`wss://${RAILWAY_URL}/ws/attention`);
+    // 🌐 Connection ban raha hai
+    socketRef.current = new WebSocket(SOCKET_URL);
 
-    // ✅ Connection Successful Logic
+    // ✅ Connection Successful
     socketRef.current.onopen = () => {
-      console.log("🚀 Connected to Railway AI!");
+      console.log("🚀 Connected to AI Engine!");
       setStudentState("AI Engine Connected ✅");
     };
 
-    // ❌ Connection Error Logic
+    // ❌ Connection Error
     socketRef.current.onerror = () => {
       setStudentState("Connection Failed ❌");
     };
 
+    // 📸 Camera Permission
     navigator.mediaDevices.getUserMedia({ video: true }).then((stream) => {
       if (videoRef.current) videoRef.current.srcObject = stream;
     }).catch(() => setStudentState("Camera Error ❌"));
 
+    // 🧠 Server se Score wapis aana
     socketRef.current.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
@@ -62,15 +64,20 @@ const AttentionDashboard = () => {
       } catch (e) { console.error("Data Parse Error:", e); }
     };
 
+    // 📤 Camera ki photo Server ko bhejna (Har 200ms baad)
     const interval = setInterval(() => {
       if (socketRef.current?.readyState === WebSocket.OPEN && videoRef.current) {
         const canvas = canvasRef.current;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+        
+        // Image tayar ki
         const base64Frame = canvas.toDataURL('image/jpeg', 0.4);
+        
+        // 🛑 YAHAN GHALTI THI: Yahan frame send karna hai, naya connection nahi banana!
         socketRef.current.send(base64Frame);
       }
-    }, 200); // 200ms is better for cloud latency
+    }, 200); 
 
     return () => {
       clearInterval(interval);
@@ -342,6 +349,7 @@ const AttentionDashboard = () => {
             <img 
                src={liveFrame.startsWith('data') ? liveFrame : `data:image/jpeg;base64,${liveFrame}`} 
                style={{ width: '100%', height: 'auto', transform: 'scaleX(-1)', display: 'block' }} 
+               alt="live"
             />
           </div>
         )}
