@@ -1,191 +1,299 @@
-import cv2, base64, time, uvicorn, os, numpy as np
+import cv2
+import base64
+import time
+import uvicorn
+import os
+import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-import mediapipe as mp
+
+# ==========================================
+# 🛑 ULTRA-SAFE MEDIAPIPE IMPORT
+# ==========================================
+try:
+    import mediapipe as mp
+    if hasattr(mp, 'solutions'):
+        mp_face_mesh = mp.solutions.face_mesh
+    else:
+        import mediapipe.python.solutions.face_mesh as mp_face_mesh
+except Exception as e:
+    print(f"⚠️ Import Warning: {e}")
+    try:
+        import mediapipe.solutions.face_mesh as mp_face_mesh
+    except:
+        print("❌ Mediapipe not found.")
+
+# Initialize AI Model safely
+try:
+    face_mesh = mp_face_mesh.FaceMesh(
+        max_num_faces=1, 
+        refine_landmarks=True, 
+        min_detection_confidence=0.5, 
+        min_tracking_confidence=0.5
+    )
+except Exception as e:
+    print(f"❌ Model Init Failed: {e}")
+    face_mesh = None
 
 app = FastAPI()
+
+# 🌐 CORS Setup for Online Deployment
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    CORSMiddleware, 
+    allow_origins=["*"], 
+    allow_credentials=True,
+    allow_methods=["*"], 
     allow_headers=["*"]
 )
 
-# ─── MediaPipe Setup ───────────────────────────────────────────────
-face_mesh = mp.solutions.face_mesh.FaceMesh(
-    static_image_mode=False,
-    max_num_faces=1,
-    refine_landmarks=True,          # ← iris landmarks bhi milenge
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5
-)
+# AI State Management (EMA Smoothing)
+class AIState:
+    def __init__(self):
+        self.current_score = 100.0
+        self.last_face_time = time.time()
+        self.alpha = 0.2 
 
-# ─── Helper Functions ──────────────────────────────────────────────
-
-def get_ear(landmarks, eye_indices):
-    """Eye Aspect Ratio - aankhein band hain ya khuli"""
-    # Vertical distances
-    A = np.linalg.norm(
-        np.array([landmarks[eye_indices[1]].x, landmarks[eye_indices[1]].y]) -
-        np.array([landmarks[eye_indices[5]].x, landmarks[eye_indices[5]].y])
-    )
-    B = np.linalg.norm(
-        np.array([landmarks[eye_indices[2]].x, landmarks[eye_indices[2]].y]) -
-        np.array([landmarks[eye_indices[4]].x, landmarks[eye_indices[4]].y])
-    )
-    # Horizontal distance
-    C = np.linalg.norm(
-        np.array([landmarks[eye_indices[0]].x, landmarks[eye_indices[0]].y]) -
-        np.array([landmarks[eye_indices[3]].x, landmarks[eye_indices[3]].y])
-    )
-    if C == 0:
-        return 0
-    return (A + B) / (2.0 * C)
-
-def get_head_pose(face):
-    """
-    Estimate head tilt using nose tip and chin.
-    Returns: pitch (up/down), yaw (left/right)
-    """
-    nose_tip   = face[1]       # Naak ka tip
-    chin       = face[152]     # Thodi
-    forehead   = face[10]      # Maatha
-    left_ear   = face[234]     # Bayan kaan
-    right_ear  = face[454]     # Seedha kaan
-
-    # Pitch: sar aage/peechhe jhuka hai
-    pitch = chin.y - forehead.y          # Normal ~0.35-0.45
-
-    # Yaw: sar left/right ghuma hai
-    yaw = left_ear.x - right_ear.x      # Normal ~0.35-0.5
-
-    return pitch, yaw
-
-def calculate_score(pitch, yaw, avg_ear, face_visible):
-    """
-    Score 0-100 calculate karo different factors se
-    """
-    if not face_visible:
-        return 0, "User Not Detected ❌"
-
-    deductions = 0
-    reasons = []
-
-    # ── 1. Eyes Check (EAR) ────────────────────────
-    # Normal EAR ~ 0.25+, Blink ke waqt 0.15 se kam
-    EAR_THRESHOLD = 0.18
-    if avg_ear < EAR_THRESHOLD:
-        deductions += 50
-        reasons.append("Eyes Closed/Drowsy 😴")
-
-    # ── 2. Pitch Check (Sar niche ya upar) ─────────
-    # Normal pitch 0.35 - 0.48
-    if pitch < 0.28:
-        deductions += 40
-        reasons.append("Looking Down (Mobile?) 📱")
-    elif pitch > 0.52:
-        deductions += 20
-        reasons.append("Looking Up 👆")
-
-    # ── 3. Yaw Check (Sar left/right ghuma) ────────
-    # Normal yaw 0.30 - 0.55
-    if yaw < 0.20:
-        deductions += 30
-        reasons.append("Looking Right ➡️")
-    elif yaw > 0.65:
-        deductions += 30
-        reasons.append("Looking Left ⬅️")
-
-    score = max(0, 100 - deductions)
-
-    # State determine karo
-    if score >= 80:
-        state = "Focused ✅"
-    elif score >= 50:
-        state = "Distracted ⚠️ | " + " | ".join(reasons) if reasons else "Slightly Distracted ⚠️"
-    elif score >= 20:
-        state = "Unfocused ❗ | " + " | ".join(reasons)
-    else:
-        state = "Not Paying Attention 🚫 | " + " | ".join(reasons)
-
-    return score, state
-
-
-# MediaPipe eye landmark indices
-LEFT_EYE  = [362, 385, 387, 263, 373, 380]
-RIGHT_EYE = [33,  160, 158, 133, 153, 144]
-
-# ─── Routes ────────────────────────────────────────────────────────
+state_manager = AIState()
 
 @app.get("/")
-def health():
-    return {"status": "AI Engine is Online ✅"}
-
+def health_check():
+    return {"status": "AI Engine is Online on Railway ✅"}
 
 @app.websocket("/ws/attention")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    print("🚀 CONNECTION ESTABLISHED - RECEIVING FRAMES...")
-
+    print("🌐 WebSocket Connected to Railway AI Engine!")
+    
     while True:
         try:
+            # 1. Receive Image Frame
             data = await websocket.receive_text()
+            
+            # 2. Decode Base64 Image Safely (Anti-Crash)
             if not data or ',' not in data:
                 continue
+                
+            encoded_data = data.split(',')[1]
+            nparr = np.frombuffer(base64.b64decode(encoded_data), np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-            # ── Decode Image ───────────────────────────────────────
-            encoded = data.split(',')[1]
-            raw     = base64.b64decode(encoded)
-            nparr   = np.frombuffer(raw, np.uint8)
-            img     = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-            if img is None:
+            if frame is None or face_mesh is None:
                 continue
 
-            # ── AI Processing ──────────────────────────────────────
-            rgb     = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            results = face_mesh.process(rgb)
-
-            score = 0
-            state = "User Not Detected ❌"
+            # 3. Process with AI Model
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = face_mesh.process(rgb_frame)
+            
+            target_score = 0
+            current_status = "System Locked"
 
             if results.multi_face_landmarks:
-                face = results.multi_face_landmarks[0].landmark
-
-                # Calculations
-                pitch, yaw = get_head_pose(face)
-                left_ear   = get_ear(face, LEFT_EYE)
-                right_ear  = get_ear(face, RIGHT_EYE)
-                avg_ear    = (left_ear + right_ear) / 2.0
-
-                score, state = calculate_score(pitch, yaw, avg_ear, face_visible=True)
-
-                print(
-                    f"✅ FACE | Score: {score}% | EAR: {avg_ear:.3f} | "
-                    f"Pitch: {pitch:.3f} | Yaw: {yaw:.3f} | {state}"
-                )
+                state_manager.last_face_time = time.time()
+                face = results.multi_face_landmarks[0]
+                
+                # Extract Landmarks
+                nose = face.landmark[1]
+                left = face.landmark[234]
+                right = face.landmark[454]
+                top = face.landmark[10]
+                bottom = face.landmark[152]
+                
+                # Math Logic for Head Pose (Aap ka Original Code)
+                width = right.x - left.x
+                center_ratio = (nose.x - left.x) / width if width > 0 else 0.5
+                yaw_deviation = abs(0.5 - center_ratio)
+                pitch_ratio = bottom.y - top.y
+                
+                if pitch_ratio < 0.28: 
+                    target_score = 15
+                    current_status = "Mobile Usage Detected"
+                elif yaw_deviation < 0.15: 
+                    target_score = 98
+                    current_status = "Highly Focused"
+                elif yaw_deviation < 0.30: 
+                    target_score = 65
+                    current_status = "Distracted"
+                else: 
+                    target_score = 5
+                    current_status = "Focus Lost"
             else:
-                print("❌ NO FACE IN FRAME")
+                # 1.5s Blackout Grace Period
+                if time.time() - state_manager.last_face_time > 1.5:
+                    target_score = 0
+                    current_status = "User Not Detected"
+                else:
+                    target_score = 45 
+                    current_status = "Searching Face..."
 
-            # ── Send Response ──────────────────────────────────────
+            # 4. Smoothing Logic
+            state_manager.current_score = (state_manager.alpha * target_score) + ((1 - state_manager.alpha) * state_manager.current_score)
+            final_score = int(state_manager.current_score)
+            if final_score < 3: final_score = 0
+
+            # 5. Send Results Back
             await websocket.send_json({
-                "focus_score":   score,
-                "student_state": state
+                "focus_score": final_score, 
+                "student_state": current_status,
+                "frame": data 
             })
-
+            
         except WebSocketDisconnect:
-            print("🔌 Connection Closed by User")
+            print("🔌 Connection Closed by User Tab")
             break
         except Exception as e:
-            print(f"⚠️ Error: {e}")
+            # 🛑 Agar koi kharab frame aye toh loop break nahi hoga, continue karega
             continue
 
+if __name__ == "__main__":
+    # 🛑 YAHAN FIX HAI: proxy_headers=True is strictly required for Railway WebSockets
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*")import cv2
+import base64
+import time
+import uvicorn
+import os
+import numpy as np
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+
+# ==========================================
+# 🛑 ULTRA-SAFE MEDIAPIPE IMPORT
+# ==========================================
+try:
+    import mediapipe as mp
+    if hasattr(mp, 'solutions'):
+        mp_face_mesh = mp.solutions.face_mesh
+    else:
+        import mediapipe.python.solutions.face_mesh as mp_face_mesh
+except Exception as e:
+    print(f"⚠️ Import Warning: {e}")
+    try:
+        import mediapipe.solutions.face_mesh as mp_face_mesh
+    except:
+        print("❌ Mediapipe not found.")
+
+# Initialize AI Model safely
+try:
+    face_mesh = mp_face_mesh.FaceMesh(
+        max_num_faces=1, 
+        refine_landmarks=True, 
+        min_detection_confidence=0.5, 
+        min_tracking_confidence=0.5
+    )
+except Exception as e:
+    print(f"❌ Model Init Failed: {e}")
+    face_mesh = None
+
+app = FastAPI()
+
+# 🌐 CORS Setup for Online Deployment
+app.add_middleware(
+    CORSMiddleware, 
+    allow_origins=["*"], 
+    allow_credentials=True,
+    allow_methods=["*"], 
+    allow_headers=["*"]
+)
+
+# AI State Management (EMA Smoothing)
+class AIState:
+    def __init__(self):
+        self.current_score = 100.0
+        self.last_face_time = time.time()
+        self.alpha = 0.2 
+
+state_manager = AIState()
+
+@app.get("/")
+def health_check():
+    return {"status": "AI Engine is Online on Railway ✅"}
+
+@app.websocket("/ws/attention")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    print("🌐 WebSocket Connected to Railway AI Engine!")
+    
+    while True:
+        try:
+            # 1. Receive Image Frame
+            data = await websocket.receive_text()
+            
+            # 2. Decode Base64 Image Safely (Anti-Crash)
+            if not data or ',' not in data:
+                continue
+                
+            encoded_data = data.split(',')[1]
+            nparr = np.frombuffer(base64.b64decode(encoded_data), np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+            if frame is None or face_mesh is None:
+                continue
+
+            # 3. Process with AI Model
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = face_mesh.process(rgb_frame)
+            
+            target_score = 0
+            current_status = "System Locked"
+
+            if results.multi_face_landmarks:
+                state_manager.last_face_time = time.time()
+                face = results.multi_face_landmarks[0]
+                
+                # Extract Landmarks
+                nose = face.landmark[1]
+                left = face.landmark[234]
+                right = face.landmark[454]
+                top = face.landmark[10]
+                bottom = face.landmark[152]
+                
+                # Math Logic for Head Pose (Aap ka Original Code)
+                width = right.x - left.x
+                center_ratio = (nose.x - left.x) / width if width > 0 else 0.5
+                yaw_deviation = abs(0.5 - center_ratio)
+                pitch_ratio = bottom.y - top.y
+                
+                if pitch_ratio < 0.28: 
+                    target_score = 15
+                    current_status = "Mobile Usage Detected"
+                elif yaw_deviation < 0.15: 
+                    target_score = 98
+                    current_status = "Highly Focused"
+                elif yaw_deviation < 0.30: 
+                    target_score = 65
+                    current_status = "Distracted"
+                else: 
+                    target_score = 5
+                    current_status = "Focus Lost"
+            else:
+                # 1.5s Blackout Grace Period
+                if time.time() - state_manager.last_face_time > 1.5:
+                    target_score = 0
+                    current_status = "User Not Detected"
+                else:
+                    target_score = 45 
+                    current_status = "Searching Face..."
+
+            # 4. Smoothing Logic
+            state_manager.current_score = (state_manager.alpha * target_score) + ((1 - state_manager.alpha) * state_manager.current_score)
+            final_score = int(state_manager.current_score)
+            if final_score < 3: final_score = 0
+
+            # 5. Send Results Back
+            await websocket.send_json({
+                "focus_score": final_score, 
+                "student_state": current_status,
+                "frame": data 
+            })
+            
+        except WebSocketDisconnect:
+            print("🔌 Connection Closed by User Tab")
+            break
+        except Exception as e:
+            # 🛑 Agar koi kharab frame aye toh loop break nahi hoga, continue karega
+            continue
 
 if __name__ == "__main__":
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", 8000)),
-        proxy_headers=True,
-        forwarded_allow_ips="*"
-    )
+    # 🛑 YAHAN FIX HAI: proxy_headers=True is strictly required for Railway WebSockets
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*")
