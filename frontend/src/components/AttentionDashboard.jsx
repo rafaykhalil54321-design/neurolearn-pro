@@ -1,8 +1,8 @@
 import React, { useEffect, useState, useRef } from 'react';
 import FocusVisualizer from './FocusVisualizer';
 
-// 🛑 LOCAL TESTING URL (Railway par push karne se pehle isay wss://neurolearn-pro-production.up.railway.app/ws/attention kar dena)
-const SOCKET_URL = "ws://localhost:8000/ws/attention";
+// 🛑 LIVE RAILWAY URL ADDED HERE
+const SOCKET_URL = "wss://neurolearn-pro-production.up.railway.app/ws/attention";
 
 const AttentionDashboard = () => {
   const [currentScore, setCurrentScore] = useState(100);
