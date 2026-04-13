@@ -1,6 +1,6 @@
 fastapi
 uvicorn
 websockets
-mediapipe
 numpy
+mediapipe
 opencv-python-headless
