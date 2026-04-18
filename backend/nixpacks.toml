@@ -1,2 +1,5 @@
 [phases.build]
-cmds = ["pip install --no-cache-dir -r requirements.txt"]
+cmds = [
+    "pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu",
+    "pip install --no-cache-dir -r requirements.txt"
+]
