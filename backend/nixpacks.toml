@@ -1,5 +1,2 @@
-[phases.setup]
-nixPkgs = ["python311", "libglvnd", "glib"]
-
 [phases.build]
-cmds = ["pip install -r backend/requirements.txt"]
+cmds = ["pip install --no-cache-dir -r requirements.txt"]
