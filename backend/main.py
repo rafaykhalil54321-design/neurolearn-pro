@@ -1,267 +1,356 @@
+"""
+Synapse — Cognitive Attention Backend
+FastAPI + MediaPipe + YOLOv8 | Professional Edition
+"""
+
 import cv2
 import base64
 import time
 import asyncio
 import random
 import os
+import logging
+
 import numpy as np
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-import mediapipe as mp
+
+# ─── LOGGING ───────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("synapse")
 
 # ─── YOLO MOBILE DETECTION ─────────────────────────────────────────────────
 try:
     from ultralytics import YOLO
-    print("[INFO] Loading YOLOv8 Nano for Mobile Detection...")
+    log.info("Loading YOLOv8 Nano for mobile detection …")
     yolo_model = YOLO("yolov8n.pt")
-    print("[INFO] YOLOv8 Loaded OK")
-except Exception as e:
-    print(f"[WARN] YOLO not available: {e}")
+    log.info("YOLOv8 loaded ✓")
+except Exception as exc:
+    log.warning(f"YOLO unavailable: {exc}")
     yolo_model = None
 
 # ─── MEDIAPIPE FACE MESH ───────────────────────────────────────────────────
-mp_face_mesh = mp.solutions.face_mesh
-face_mesh = mp_face_mesh.FaceMesh(
+import mediapipe as mp
+
+_mp_face = mp.solutions.face_mesh
+face_mesh = _mp_face.FaceMesh(
     max_num_faces=1,
     refine_landmarks=True,
-    min_detection_confidence=0.6,
-    min_tracking_confidence=0.6
+    min_detection_confidence=0.60,
+    min_tracking_confidence=0.60,
 )
 
-app = FastAPI()
+# ─── APP ───────────────────────────────────────────────────────────────────
+app = FastAPI(title="Synapse Attention API", version="2.0.0")
+
 app.add_middleware(
     CORSMiddleware,
-    # Yahan Vercel ka live link add kar diya gaya hai
-    allow_origins=["https://neurolearn-pro.vercel.app", "*"], 
+    allow_origins=["https://neurolearn-pro.vercel.app", "*"],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
 )
+
+STUDENT_ID = "Rafay Khalil"
+
+# ─── CONSTANTS ─────────────────────────────────────────────────────────────
+class Thresh:
+    EAR_SLEEP       = 0.010   # normalised EAR below this → eyes closed
+    EAR_DROWSY_SEC  = 2.0     # seconds eyes closed before "Drowsy"
+    EAR_SLEEP_SEC   = 10.0    # seconds eyes closed before "Sleeping"
+
+    YAW_FOCUSED     = 0.06    # yaw deviation: fully focused zone
+    YAW_DISTRACTED  = 0.25    # yaw deviation: looking away
+
+    PITCH_MIN       = 0.10    # chin-forehead dy below this → head down
+
+    NO_FACE_SEC     = 1.5     # seconds without face → absent
+
+    MOBILE_CONF     = 0.40    # YOLO confidence threshold
+    MOBILE_LOW_CONF = 0.35    # low-conf pass for second scan
+    MOBILE_HOLD_SEC = 2.5     # how long mobile alert stays active
+    MOBILE_CONFIRM  = 2       # consecutive detections needed to confirm
+    MOBILE_INTERVAL = 6       # run YOLO every N frames
+
+    EMA_ALPHA       = 0.85    # exponential moving average smoothing
 
 # ─── INCIDENT TRACKER ──────────────────────────────────────────────────────
 class IncidentTracker:
-    def __init__(self):
-        self.logs = []
+    """Deduplicates incidents within a cooldown window."""
 
-    def add_log(self, student_id: str, activity: str):
+    COOLDOWN = 5.0  # seconds
+
+    def __init__(self):
+        self._logs: list[dict] = []
+
+    def record(self, student: str, activity: str) -> None:
         now = time.time()
-        timestamp = time.strftime("%H:%M:%S")
-        # Deduplicate: don't repeat same event within 5 seconds
-        if self.logs and self.logs[-1]['activity'] == activity and (now - self.logs[-1]['raw_time'] < 5):
-            return
-        self.logs.append({
-            "time": timestamp,
-            "student": student_id,
+        if self._logs:
+            last = self._logs[-1]
+            if last["activity"] == activity and (now - last["_ts"] < self.COOLDOWN):
+                return
+        self._logs.append({
+            "time":     time.strftime("%H:%M:%S"),
+            "student":  student,
             "activity": activity,
-            "raw_time": now
+            "_ts":      now,
         })
+        log.info(f"INCIDENT [{student}] → {activity}")
+
+    def recent(self, n: int = 5) -> list[dict]:
+        """Return the last n logs, without private keys."""
+        return [
+            {k: v for k, v in entry.items() if not k.startswith("_")}
+            for entry in self._logs[-n:]
+        ]
 
 tracker = IncidentTracker()
 
 # ─── SESSION STATE ─────────────────────────────────────────────────────────
-class SessionManager:
+class Session:
+    """Per-connection mutable state. One instance per WS client."""
+
     def __init__(self):
-        self.frame_count       = 0
-        self.last_face_time    = time.time()
-        self.sleep_timer       = None
-        self.current_score     = 100.0
-        self.alpha             = 0.85          # EMA smoothing
-        self.yolo_running      = False
-        self.mobile_alert_time = 0.0           # last mobile detection timestamp
-        self.mobile_conf_count = 0             # consecutive mobile detections
-        self.mobile_confirmed  = False         # confirmed after N frames
+        self.frame_count: int     = 0
+        self.last_face_ts: float  = time.time()
 
-session = SessionManager()
-STUDENT_ID = "Rafay Khalil"
+        # Sleep tracking
+        self.eyes_closed_since: float | None = None
 
-# ─── ENHANCED MOBILE DETECTION ─────────────────────────────────────────────
-def run_yolo_mobile(img: np.ndarray) -> tuple[bool, float]:
+        # Score
+        self.score: float = 100.0
+
+        # Mobile detection
+        self.yolo_busy: bool      = False
+        self.mobile_alert_ts: float = 0.0
+        self.mobile_conf_run: int  = 0
+        self.mobile_confirmed: bool = False
+
+# ─── MOBILE DETECTION ─────────────────────────────────────────────────────
+def _detect_phone(img: np.ndarray) -> tuple[bool, float]:
     """
-    Returns (detected: bool, confidence: float).
-    Detects class 67 = 'cell phone' with multi-scale strategy.
-    Optimised for iOS devices (often glossy/white — lower texture).
+    Run YOLOv8 with a two-pass strategy for better recall on phones.
+    Returns (detected, best_confidence).
     """
     if yolo_model is None:
         return False, 0.0
 
-    best_conf = 0.0
+    best = 0.0
 
-    # Pass 1: standard size
-    results = yolo_model(img, classes=[67], conf=0.40, verbose=False, imgsz=320)
-    for r in results:
+    # Pass 1 — 320 px scan
+    for r in yolo_model(img, classes=[67], conf=Thresh.MOBILE_CONF, verbose=False, imgsz=320):
         for box in r.boxes:
             c = float(box.conf[0])
-            if c > best_conf:
-                best_conf = c
+            if c > best:
+                best = c
 
-    # Pass 2: if borderline, try full-res (catches small/partially occluded phones)
-    if best_conf == 0.0:
+    # Pass 2 — full-res scan only when pass 1 missed (saves compute)
+    if best == 0.0:
         h, w = img.shape[:2]
         big = cv2.resize(img, (640, int(640 * h / w))) if w < 600 else img
-        results2 = yolo_model(big, classes=[67], conf=0.35, verbose=False, imgsz=640)
-        for r in results2:
+        for r in yolo_model(big, classes=[67], conf=Thresh.MOBILE_LOW_CONF, verbose=False, imgsz=640):
             for box in r.boxes:
                 c = float(box.conf[0])
-                if c > best_conf:
-                    best_conf = c
+                if c > best:
+                    best = c
 
-    detected = best_conf >= 0.40
-    return detected, best_conf
+    return best >= Thresh.MOBILE_CONF, best
 
 
-async def check_mobile_async(img: np.ndarray):
-    """Run YOLO in thread pool, update session state with confirmation logic."""
+async def _async_phone_check(img: np.ndarray, sess: Session) -> None:
+    """Offload YOLO to thread pool; update session state with confirmation logic."""
     try:
-        session.yolo_running = True
-        detected, conf = await asyncio.to_thread(run_yolo_mobile, img)
+        sess.yolo_busy = True
+        detected, conf = await asyncio.to_thread(_detect_phone, img)
 
         if detected:
-            session.mobile_conf_count += 1
-            # Require 2 consecutive detections to confirm (reduces false positives)
-            if session.mobile_conf_count >= 2:
-                session.mobile_confirmed  = True
-                session.mobile_alert_time = time.time()
-                tracker.add_log(STUDENT_ID, f"Mobile Phone Detected (conf: {conf:.0%})")
+            sess.mobile_conf_run += 1
+            if sess.mobile_conf_run >= Thresh.MOBILE_CONFIRM:
+                sess.mobile_confirmed  = True
+                sess.mobile_alert_ts   = time.time()
+                tracker.record(STUDENT_ID, f"Mobile Phone Detected (conf: {conf:.0%})")
         else:
-            session.mobile_conf_count = max(0, session.mobile_conf_count - 1)
-            if session.mobile_conf_count == 0:
-                session.mobile_confirmed = False
-    except Exception as e:
-        print(f"[YOLO ERR] {e}")
-    finally:
-        session.yolo_running = False
+            sess.mobile_conf_run = max(0, sess.mobile_conf_run - 1)
+            if sess.mobile_conf_run == 0:
+                sess.mobile_confirmed = False
 
+    except Exception as exc:
+        log.error(f"YOLO error: {exc}")
+    finally:
+        sess.yolo_busy = False
+
+# ─── LANDMARK HELPERS ─────────────────────────────────────────────────────
+def _ear(face_lm, top: int, bot: int) -> float:
+    """Normalised vertical eye aperture for one eye."""
+    return abs(face_lm.landmark[top].y - face_lm.landmark[bot].y)
+
+
+def _yaw_deviation(face_lm) -> float | None:
+    """Nose-to-cheek ratio deviation from 0.5 (centre). None if face_width≈0."""
+    nose        = face_lm.landmark[1]
+    left_cheek  = face_lm.landmark[234]
+    right_cheek = face_lm.landmark[454]
+    face_w = right_cheek.x - left_cheek.x
+    if face_w < 1e-4:
+        return None
+    return abs(0.5 - (nose.x - left_cheek.x) / face_w)
+
+
+def _pitch_dy(face_lm) -> float:
+    """Vertical chin-to-forehead distance (small = head tilted down)."""
+    return face_lm.landmark[152].y - face_lm.landmark[10].y
 
 # ─── WEBSOCKET ENDPOINT ────────────────────────────────────────────────────
 @app.websocket("/ws/attention")
-async def websocket_endpoint(websocket: WebSocket):
+async def attention_ws(websocket: WebSocket):
     await websocket.accept()
+    sess = Session()
+    log.info("Client connected")
 
-    while True:
-        try:
-            data = await websocket.receive_text()
-            if not data or ',' not in data:
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            if not raw or "," not in raw:
                 continue
 
-            # Decode frame
-            encoded = data.split(',')[1]
-            nparr   = np.frombuffer(base64.b64decode(encoded), np.uint8)
-            frame   = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            # ── Decode JPEG frame ──────────────────────────────────────────
+            try:
+                encoded = raw.split(",", 1)[1]
+                arr     = np.frombuffer(base64.b64decode(encoded), np.uint8)
+                frame   = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            except Exception:
+                continue
             if frame is None:
                 continue
 
-            session.frame_count += 1
+            sess.frame_count += 1
             now = time.time()
 
-            target_score   = 98.0
-            current_status = "Highly Focused"
-            instant_drop   = False
+            target_score    = 98.0
+            student_state   = "Highly Focused"
+            instant_drop    = False
 
-            # ── 1. MOBILE DETECTION (every 6 frames, async) ─────────────
-            if session.frame_count % 6 == 0 and not session.yolo_running:
-                asyncio.create_task(check_mobile_async(frame.copy()))
+            # ── 1. Mobile detection (async, every N frames) ───────────────
+            if sess.frame_count % Thresh.MOBILE_INTERVAL == 0 and not sess.yolo_busy:
+                asyncio.create_task(_async_phone_check(frame.copy(), sess))
 
-            # Mobile alert active window: 2.5 s after last detection
-            is_mobile_active = (now - session.mobile_alert_time) < 2.5
+            mobile_active = (now - sess.mobile_alert_ts) < Thresh.MOBILE_HOLD_SEC
 
-            # ── 2. FACE MESH ─────────────────────────────────────────────
+            # ── 2. Face mesh analysis ─────────────────────────────────────
             rgb    = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             result = face_mesh.process(rgb)
 
-            if is_mobile_active:
-                current_status = "Mobile Phone Detected"
-                target_score   = 10.0
-                instant_drop   = True
+            if mobile_active:
+                # Mobile takes priority — hard override
+                student_state = "Mobile Phone Detected"
+                target_score  = 10.0
+                instant_drop  = True
 
             elif result.multi_face_landmarks:
-                session.last_face_time = now
+                sess.last_face_ts = now
                 face = result.multi_face_landmarks[0]
 
-                # ── EAR (Eye Aspect Ratio) drowsiness check ─────────────
-                ear_l = abs(face.landmark[159].y - face.landmark[145].y)
-                ear_r = abs(face.landmark[386].y - face.landmark[374].y)
-                avg_ear = (ear_l + ear_r) / 2.0
+                # ── Eye Aspect Ratio (EAR) ─────────────────────────────
+                avg_ear = (_ear(face, 159, 145) + _ear(face, 386, 374)) / 2.0
 
-                SLEEP_THRESHOLD = 0.010
+                if avg_ear < Thresh.EAR_SLEEP:
+                    # Eyes are closed — start / continue timer
+                    if sess.eyes_closed_since is None:
+                        sess.eyes_closed_since = now
+                    elapsed = now - sess.eyes_closed_since
 
-                if avg_ear < SLEEP_THRESHOLD:
-                    if not session.sleep_timer:
-                        session.sleep_timer = now
+                    if elapsed >= Thresh.EAR_SLEEP_SEC:
+                        student_state = "Sleeping"
+                        target_score  = 5.0
+                        instant_drop  = True
+                        tracker.record(STUDENT_ID, "Student fell asleep")
 
-                    elapsed = now - session.sleep_timer
-                    if elapsed > 10:
-                        current_status = "Sleeping Detected"
-                        target_score   = 5.0
-                        instant_drop   = True
-                        tracker.add_log(STUDENT_ID, "Student fell asleep")
-                    elif elapsed > 2:
-                        current_status = "Drowsy / Eyes Closed"
-                        target_score   = 35.0
-                        instant_drop   = True
+                    elif elapsed >= Thresh.EAR_DROWSY_SEC:
+                        student_state = "Drowsy / Eyes Closing"
+                        target_score  = 35.0
+                        instant_drop  = True
+
                 else:
-                    session.sleep_timer = None  # reset immediately on open eyes
+                    # Eyes open — reset sleep timer
+                    sess.eyes_closed_since = None
 
-                    # ── YAW angle via nose-cheek ratio ───────────────────
-                    nose        = face.landmark[1]
-                    left_cheek  = face.landmark[234]
-                    right_cheek = face.landmark[454]
-                    face_width  = right_cheek.x - left_cheek.x
+                    # ── Head pose ──────────────────────────────────────
+                    pitch = _pitch_dy(face)
+                    yaw   = _yaw_deviation(face)
 
-                    if face_width > 0:
-                        yaw_ratio     = (nose.x - left_cheek.x) / face_width
-                        yaw_deviation = abs(0.5 - yaw_ratio)
+                    if pitch < Thresh.PITCH_MIN:
+                        student_state = "Head Down"
+                        target_score  = 50.0
 
-                        # ── PITCH check (head tilt down = head-down) ─────
-                        chin     = face.landmark[152]
-                        forehead = face.landmark[10]
-                        pitch_dy = chin.y - forehead.y
+                    elif yaw is None:
+                        student_state = "Focused"
+                        target_score  = 80.0
 
-                        if pitch_dy < 0.10:
-                            current_status = "Head Down"
-                            target_score   = 50.0
-                        elif yaw_deviation <= 0.06:
-                            target_score   = random.uniform(97.0, 100.0)
-                            current_status = "Highly Focused"
-                        elif yaw_deviation > 0.25:
-                            target_score   = random.uniform(20.0, 35.0)
-                            current_status = "Looking Away"
-                            tracker.add_log(STUDENT_ID, "Looking away from screen")
-                        else:
-                            pct            = (yaw_deviation - 0.06) / 0.19
-                            target_score   = 97.0 - (pct * 65.0) + random.uniform(-1.0, 1.0)
-                            current_status = "Focused" if target_score > 70 else "Distracted"
+                    elif yaw <= Thresh.YAW_FOCUSED:
+                        student_state = "Highly Focused"
+                        target_score  = random.uniform(97.0, 100.0)
+
+                    elif yaw > Thresh.YAW_DISTRACTED:
+                        student_state = "Looking Away"
+                        target_score  = random.uniform(20.0, 35.0)
+                        tracker.record(STUDENT_ID, "Looking away from screen")
+
+                    else:
+                        # Gradual degradation between focused and distracted
+                        pct           = (yaw - Thresh.YAW_FOCUSED) / (Thresh.YAW_DISTRACTED - Thresh.YAW_FOCUSED)
+                        raw_score     = 97.0 - pct * 65.0 + random.uniform(-1.0, 1.0)
+                        target_score  = max(30.0, raw_score)
+                        student_state = "Focused" if target_score > 70 else "Distracted"
 
             else:
-                # No face detected
-                if now - session.last_face_time > 1.5:
-                    current_status = "User Not Detected"
-                    target_score   = 0.0
-                    instant_drop   = True
-                    tracker.add_log(STUDENT_ID, "Left the screen")
+                # No face landmarks
+                if now - sess.last_face_ts > Thresh.NO_FACE_SEC:
+                    student_state = "User Not Detected"
+                    target_score  = 0.0
+                    instant_drop  = True
+                    tracker.record(STUDENT_ID, "Left the screen")
 
-            # ── 3. SCORE FILTER ──────────────────────────────────────────
+            # ── 3. Score EMA smoothing ────────────────────────────────────
             if instant_drop:
-                session.current_score = target_score
+                sess.score = target_score
             else:
-                session.current_score = (session.alpha * target_score) + ((1 - session.alpha) * session.current_score)
+                sess.score = (
+                    Thresh.EMA_ALPHA * target_score
+                    + (1.0 - Thresh.EMA_ALPHA) * sess.score
+                )
 
-            final_score = int(max(0, min(100, session.current_score)))
+            final_score = int(max(0, min(100, sess.score)))
 
+            # ── 4. Send response ──────────────────────────────────────────
             await websocket.send_json({
                 "focus_score":   final_score,
-                "student_state": current_status,
-                "incident_logs": tracker.logs[-5:]
+                "student_state": student_state,
+                "incident_logs": tracker.recent(5),
             })
 
-        except WebSocketDisconnect:
-            print("[WS] Client disconnected")
-            break
-        except Exception as ex:
-            print(f"[ERR] {ex}")
-            continue
+    except WebSocketDisconnect:
+        log.info("Client disconnected")
+    except Exception as exc:
+        log.error(f"Unhandled error: {exc}")
 
 
+# ─── HEALTH CHECK ─────────────────────────────────────────────────────────
+@app.get("/health")
+async def health():
+    return {
+        "status":    "ok",
+        "yolo":      yolo_model is not None,
+        "mediapipe": True,
+    }
+
+
+# ─── ENTRY POINT ──────────────────────────────────────────────────────────
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
+    log.info(f"Starting Synapse backend on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
