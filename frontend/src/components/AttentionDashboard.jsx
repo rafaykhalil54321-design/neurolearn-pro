@@ -950,7 +950,7 @@ const AttentionDashboard = () => {
     let csv = `data:text/csv;charset=utf-8,Session Report: ${STUDENT_NAME}\n\nTime,Activity\n`;
     incidentLogs.forEach(log => { csv += `${log.time},${log.activity.replace(emojiRx, '').trim()}\n`; });
     const link = Object.assign(document.createElement("a"), {
-      href: encodeURI(csv), download: `Synapse_${STUDENT_NAME.replace(' ', '_')}.csv`
+      href: encodeURI(csv), download: `ProctorIQ _${STUDENT_NAME.replace(' ', '_')}.csv`
     });
     document.body.appendChild(link); link.click(); document.body.removeChild(link);
   };
@@ -997,7 +997,7 @@ const AttentionDashboard = () => {
             <div className="brand">
               <div className="logo-mark"><SynapseLogo /></div>
               <div className="brand-text">
-                <div className="brand-name">Synapse</div>
+                <div className="brand-name">ProctorIQ </div>
                 <div className="brand-tagline">Cognitive Attention Platform</div>
               </div>
             </div>

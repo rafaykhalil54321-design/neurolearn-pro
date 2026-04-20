@@ -232,7 +232,7 @@ export default function TeacherDashboard() {
             <div className="td-brand">
               <div className="td-brand-icon">S</div>
               <div>
-                <div className="td-brand-name">Synapse</div>
+                <div className="td-brand-name">ProctorIQ </div>
                 <div className="td-brand-sub">Educator Analytics Panel</div>
               </div>
             </div>

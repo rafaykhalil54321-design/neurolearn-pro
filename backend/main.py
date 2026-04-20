@@ -1,5 +1,5 @@
 """
-Synapse — Cognitive Attention Backend
+ProctorIQ — Cognitive Attention Backend
 FastAPI + MediaPipe + YOLOv8 | Professional Edition
 """
 
@@ -22,7 +22,7 @@ logging.basicConfig(
     format="%(asctime)s  %(levelname)-8s  %(message)s",
     datefmt="%H:%M:%S",
 )
-log = logging.getLogger("synapse")
+log = logging.getLogger("ProctorIQ ")
 
 # ─── YOLO MOBILE DETECTION ─────────────────────────────────────────────────
 try:
@@ -46,7 +46,7 @@ face_mesh = _mp_face.FaceMesh(
 )
 
 # ─── APP ───────────────────────────────────────────────────────────────────
-app = FastAPI(title="Synapse Attention API", version="2.0.0")
+app = FastAPI(title="ProctorIQ  Attention API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -352,5 +352,5 @@ async def health():
 # ─── ENTRY POINT ──────────────────────────────────────────────────────────
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    log.info(f"Starting Synapse backend on port {port}")
+    log.info(f"Starting ProctorIQ  backend on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
