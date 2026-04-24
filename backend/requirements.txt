@@ -6,3 +6,4 @@ numpy
 mediapipe
 ultralytics
 python-multipart
+sqlalchemy
