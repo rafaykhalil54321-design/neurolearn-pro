@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+websockets
+opencv-python-headless
+numpy
+mediapipe
+ultralytics
+python-multipart
+sqlalchemy
